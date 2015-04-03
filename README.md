@@ -1,6 +1,6 @@
 # Derivative Combinator
 
-A F# implementation of Matt Mights _Parsing with Derivatives_.
+F# and OCaml implementations of Matt Mights _Parsing with Derivatives_.
 
 __Note:__
 - Currently in development phases still
