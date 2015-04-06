@@ -37,7 +37,7 @@ module Parser =
   type Parser = 
     | Empty
     | Epsilon
-    | Lit of char
+    | Token of char
     | Alt of Lazy<Parser> * Lazy<Parser>
     | Seq of Lazy<Parser> * Lazy<Parser>
   
@@ -51,7 +51,7 @@ module Parser =
     match parser with
       | Empty      -> false
       | Epsilon    -> true
-      | Lit c      -> false
+      | Token c    -> false
       | Alt(l1,l2) -> 
         let l1f, l2f = force parser
         nullable l1f || nullable l2f
@@ -68,51 +68,57 @@ module Parser =
     match parser with
       | Epsilon -> true
       | _       -> false 
+
+  let rec isNull parser = 
+    match parser with
+      | Empty   -> false
+      | Epsilon -> true
+      | Token c -> false
+      | Alt(l1,l2) -> 
+        let l1f, l2f = force parser
+        isNull l1f && isNull l2f
+      | Seq(l1,l2) -> 
+        let l1f, l2f = force parser
+        isNull l1f && isNull l2f
   
   let rec compactF (parser : Parser) = 
     match parser with
-      | Empty      -> 
-        printfn "EMPTY COMPACT"
-        parser
-      | Epsilon    -> 
-        printfn "EPSILON COMPACT"
-        parser
-      | Lit c      -> 
-        printfn "LIT COMPACT"
-        parser
+      | Empty      -> parser
+      | Epsilon    -> parser
+      | Token c    -> parser
       | Alt(l1,l2) -> 
         let l1f, l2f = force parser
-        if (isEmpty l1f) then compact l2f
-        else if (isEmpty l2f) then compact l1f
+        if isEmpty l1f then compact l2f
+        else if isEmpty l2f then compact l1f
         else
-          printfn "ALT COMPACT"
+          //printfn "ALT COMPACT"
           let l1c, l2c = (compact l1f, compact l2f)
           Alt(lazy(l1c), lazy(l2c))
       | Seq(l1,l2) -> 
         let l1f, l2f = force parser
         if (isEmpty l1f || isEmpty l2f) then Empty
-        else if (isEpsilon l1f) then compact l2f
-        else if (isEpsilon l2f) then compact l1f
+        else if isEpsilon l1f then compact l2f
+        else if isEpsilon l2f then compact l1f
         else 
           let l1c, l2c = (compact l1f, compact l2f)
-          printfn "SEQ COMPACT"
+          //printfn "SEQ COMPACT"
           Seq (lazy(l1c), lazy(l2c))
   
-  and compact = memoize compactF 
+  and compact = memoize compactF (* Fix point this *)
   
-  and alt2 = memoize (fun l1 l2 -> compact(Alt(lazy(l1), lazy(l2)) ) )
+  let alt2 = memoize (fun l1 l2 -> compact(Alt(lazy(l1), lazy(l2)))) (* Is this really memoized? *)
   
-  and seq2 = memoize (fun l1 l2 -> compact(Seq(lazy(l1),lazy(l2))))
+  let seq2 = memoize (fun l1 l2 -> compact(Seq(lazy(l1),lazy(l2))))
   
-  and seq parsers = List.reduce seq2 (parsers@[Epsilon])
+  let seq parsers = List.reduce seq2 (Epsilon::parsers)
   
-  and alt parsers = List.reduce alt2 (parsers@[Empty]) //Not sure if begin or end matter.
+  let alt parsers = List.reduce alt2 (Empty::parsers) (* Not sure if begin or end matter. *)
   
   let rec deriveF c parser = 
     match parser with 
       | Empty      -> Empty
       | Epsilon    -> Empty
-      | Lit tok    ->
+      | Token tok    ->
          if c = tok then Epsilon
          else Empty
       | Alt(l1, l2) ->
@@ -131,7 +137,7 @@ module Parser =
     match parser with 
       | Empty      -> 1
       | Epsilon    -> 1
-      | Lit c      -> 1
+      | Token c      -> 1
       | Alt(l1,l2) -> 
         let l1f, l2f = force parser
         1 + size l1f + size l2f
@@ -139,27 +145,36 @@ module Parser =
         let l1f, l2f = force parser
         1 + size l1f + size l2f
   
-  let parses parser str = 
-    let chars = String.explode str
-    let rec partialParse parser chars = 
-      match chars with 
+  let parses parser tokens = 
+    let rec partialParse parser tokens = 
+      match tokens with 
         | []    -> nullable parser
         | c::cs -> partialParse (derive c parser) cs
-    partialParse parser chars   
+    partialParse parser tokens   
   
+  let parseNull p =  (* Still need to finish. *)
+    match p with 
+      | Empty -> Set.empty
+      | _ -> Set.empty
+
+  let rec parse p s =
+    match s with
+      | []    -> parseNull p
+      | c::cs -> parse (derive c p) cs
+
   (* DEBUGGING *)
   
   let rec lit charArray =
     match charArray with
       | []    -> []
-      | c::cs -> (Lit c)::(lit cs)
+      | c::cs -> (Token c)::(lit cs)
   
   let printParser parser = 
     let rec printIt parser = 
       match parser with
         | Empty     -> printf "Empty"
         | Epsilon   -> printf "Epsilon"
-        | Lit c     -> printf "Lit %c" c
+        | Token c     -> printf "Token %c" c
         | Alt(l1,l2) ->
           let l1f, l2f = force parser
           printf "Alt("
@@ -178,22 +193,28 @@ module Parser =
     printf "\n"
     true
   
+  let parses_str parser str = 
+    let chars = String.explode str
+    let rec partialParse parser chars = 
+      match chars with 
+        | []    -> nullable parser
+        | c::cs -> partialParse (derive c parser) cs
+    partialParse parser chars   
+
   (* TEST *)
-  let simple = Seq (lazy(Lit('x')), lazy(Epsilon))
-  let lit_xy = Seq( lazy(Seq( lazy(Lit('x')), lazy(Lit('y') ) )), lazy(Epsilon))
+  let simple = Seq (lazy(Token('x')), lazy(Epsilon))
+  let lit_xy = Seq( lazy(Seq( lazy(Token('x')), lazy(Token('y') ) )), lazy(Epsilon))
   
   let literal litr = 
-    let str = litr
-    let chararray = String.explode str
+    let chararray = String.explode litr
     seq (lit chararray)
   
   let string_lits literal = 
-    let str = literal
-    let chararray = String.explode str
+    let chararray = String.explode literal
     lit chararray
   
   let mini_java =
-    let space = Lit ' '
+    let space = Token ' '
     let alphabet = alt (string_lits "abcdefghijklmnopqrstuvwxyz")
     let capAlpha = alt (string_lits "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
     let optChar = alt ([alphabet; capAlpha; Epsilon])
