@@ -10,8 +10,8 @@ language.
 ### Functions
 Functions used in parsing.
 
-| Function  | Name |
-|-----------|------|
+| Function  | Purpose |
+|-----------|---------|
 | memoize   | Allows porgram to terminate by using memory. |
 | force     | Returns the two parsed languages (for Seq and Alt) |
 | nullable  | Whether the parser can be reduced to the empty string |

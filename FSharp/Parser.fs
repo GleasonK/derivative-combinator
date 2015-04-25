@@ -6,6 +6,42 @@ module String =
   let explode (s:string) =
     [for c in s -> c]
 
+module Fix = 
+  let fix body bottom = 
+    let Cache = new Dictionary<_, _>()
+    let Visited = new Dictionary<_,bool>()
+    let changed = ref true
+    let running = ref false
+    let rec f = fun parser -> 
+      if not !running then
+        if Cache.ContainsKey(parser) then Cache.[parser]
+        else
+          changed := true
+          running := true
+          Visited.Clear()
+          let v = ref bottom
+          while (!changed) do
+            changed := false
+            Visited.Clear()
+            v := (f parser)
+          !v
+      else
+        if Visited.ContainsKey(parser) then 
+          if Cache.ContainsKey(parser) then Cache.[parser] else bottom
+        else
+            Visited.Add(parser, true)
+            let value = body parser
+            if Cache.ContainsKey(parser) then
+              if Cache.[parser] <> value then
+                changed := true
+                Cache.[parser] <- value
+                value
+              else
+                value
+            else
+                Cache.Add(parser, value)
+                value
+    fun parser -> f parser
 
 module Parser =
   let memoize f =
@@ -34,75 +70,150 @@ module Parser =
         resDic.[c] <- res
         res
   
+  (*[<StructuralEquality;StructuralComparison>]*)
+  type ParseSet =
+    | EmptyS
+    | EpsilonS
+    | EpsParseS of HashSet<ParseSet>
+    | Cons of ParseSet * ParseSet
+    | TokenS of char
+
   type Parser = 
     | Empty
     | Epsilon
+    | EpsS of HashSet<ParseSet>
     | Token of char
     | Alt of Lazy<Parser> * Lazy<Parser>
     | Seq of Lazy<Parser> * Lazy<Parser>
   
-  let force l =
-    match l with 
-      | Alt(l1,l2) -> (l1.Force(), l2.Force())
-      | Seq(l1,l2) -> (l1.Force(), l2.Force())
-      | _ -> failwith "Not a forceable lazy value."
-  
-  let rec nullable parser = 
+  let (|Seqp|_|) parser =
     match parser with
-      | Empty      -> false
-      | Epsilon    -> true
-      | Token c    -> false
-      | Alt(l1,l2) -> 
-        let l1f, l2f = force parser
-        nullable l1f || nullable l2f
-      | Seq(l1,l2) -> 
-        let l1f, l2f = force parser
-        nullable l1f && nullable l2f
-  
-  let isEmpty parser =
+      | Seq(l1,l2) -> Some(l1.Force(), l2.Force())
+      | _          -> None
+
+  let (|Altp|_|) parser =
     match parser with
-      | Empty -> true
-      | _     -> false
+      | Alt(l1,l2) -> Some(l1.Force(), l2.Force())
+      | _          -> None
+  
+  (* Checks if a Parser is nullable - Uses Least Fixed Point *)
+  let rec nullableF parser =
+    match parser with
+      | Empty       -> false
+      | Epsilon     -> true
+      | Token c     -> false
+      | Altp(l1,l2) -> nullable l1 || nullable l2
+      | Seqp(l1,l2) -> nullable l1 && nullable l2
+      | _ -> false
+  and nullable = Fix.fix nullableF false
+
+  (* Active Pattern Matchers *)
+  let (|Nullablep|_|) parser = if nullable parser then Some(parser) else None
   
   let isEpsilon parser =
     match parser with
       | Epsilon -> true
       | _       -> false 
 
-  let rec isNull parser = 
+  let rec isEmptyF parser =
     match parser with
-      | Empty   -> false
-      | Epsilon -> true
-      | Token c -> false
-      | Alt(l1,l2) -> 
-        let l1f, l2f = force parser
-        isNull l1f && isNull l2f
-      | Seq(l1,l2) -> 
-        let l1f, l2f = force parser
-        isNull l1f && isNull l2f
+      | Empty       -> true
+      | Epsilon     -> false
+      | Token c     -> false
+      | Altp(l1,l2) -> isEmpty l1 && isEmpty l2
+      | Seqp(l1,l2) -> isEmpty l1 || isEmpty l2
+      | _ -> false
+  and isEmpty = Fix.fix isEmptyF true
   
-  let rec compactF (parser : Parser) = 
+  let rec isNullF parser = 
     match parser with
-      | Empty      -> parser
-      | Epsilon    -> parser
-      | Token c    -> parser
-      | Alt(l1,l2) -> 
-        let l1f, l2f = force parser
-        if isEmpty l1f then compact l2f
-        else if isEmpty l2f then compact l1f
+      | Empty       -> false
+      | Epsilon     -> true
+      | Token c     -> false
+      | Altp(l1,l2) -> isNull l1 && isNull l2
+      | Seqp(l1,l2) -> isNull l1 && isNull l2
+      | _ -> false
+  and isNull = Fix.fix isNullF true
+  
+  let (|Emptyp|_|) parser = if isEmpty parser then Some(parser) else None
+
+  let (|Nullp|_|) parser = if isNull parser then Some(parser) else None
+  
+  let mutableAdd (hs : HashSet<ParseSet>) item =
+    hs.Add(item)
+    hs
+  
+  let rec parseNullF parser =  (* Still need to finish. *)
+    match parser with 
+      | Empty       -> new HashSet<ParseSet>()
+      | EpsS S      -> S
+      | Epsilon     -> 
+        let set = new HashSet<ParseSet>()
+        mutableAdd set EpsilonS
+      | Token c     -> new HashSet<ParseSet>()
+      | Altp(l1,l2) -> 
+        let hs : HashSet<ParseSet> = (parseNull l1)
+        hs.UnionWith (parseNull l2)
+        hs
+      | Seqp(l1,l2) -> 
+        let s = new HashSet<ParseSet>();
+        let s1,s2 = (parseNull l1, parseNull l2)
+        for p1 in s1 do
+          for p2 in s2 do
+            s.Add(Cons(p1,p2))
+        printfn "%A" s
+        s //Set.union (parseNull l1) (parseNull l2)
+      | _ -> failwith "ParseNull Error, type not caught"
+  and parseNull = Fix.fix parseNullF (new HashSet<ParseSet>())
+  (* Incorrect, need to handle Seqp *)
+
+  let printParser parser = 
+    let rec printIt parser = 
+      match parser with
+        | Empty       -> printf "Empty"
+        | Epsilon     -> printf "Epsilon"
+        | Token c     -> printf "Token %c" c
+        | Altp(l1,l2) ->
+          printf "Alt("
+          printIt l1
+          printf ", "
+          printIt l2
+          printf ")"
+        | Seqp(l1,l2) -> 
+          printf "Seq("
+          printIt l1
+          printf ", "
+          printIt l2
+          printf ")"
+        | _ -> printf "%A" parser
+    printIt parser
+    printf "\n"
+    true
+
+  let rec compactF (parser : Parser) = 
+    printfn "%A" parser
+    match parser with
+      | Empty       -> parser
+      | Epsilon     -> parser
+      | Emptyp  p   -> Empty
+      | Nullp  p    -> EpsS (parseNull p)
+      | Token c     -> parser
+      | Altp(l1,l2) -> 
+        if isEmpty l1 then compact l2
+        else if isEmpty l2 then compact l1
         else
-          //printfn "ALT COMPACT"
-          let l1c, l2c = (compact l1f, compact l2f)
+          let l1c, l2c = (compact l1, compact l2)
           Alt(lazy(l1c), lazy(l2c))
-      | Seq(l1,l2) -> 
-        let l1f, l2f = force parser
-        if (isEmpty l1f || isEmpty l2f) then Empty
-        else if isEpsilon l1f then compact l2f
-        else if isEpsilon l2f then compact l1f
+      | Seqp(l1,l2) -> 
+        if (isEmpty l1 || isEmpty l2) then Empty
+        else if isEpsilon l1 then compact l2
+        else if isEpsilon l2 then compact l1
         else 
-          let l1c, l2c = (compact l1f, compact l2f)
-          //printfn "SEQ COMPACT"
+          let l1c, l2c = (compact l1, compact l2)
           Seq (lazy(l1c), lazy(l2c))
+      | _ -> 
+        printfn "Compact, %A Found" parser
+        parser
   
   and compact = memoize compactF (* Fix point this *)
   
@@ -113,37 +224,46 @@ module Parser =
   let seq parsers = List.reduce seq2 (Epsilon::parsers)
   
   let alt parsers = List.reduce alt2 (Empty::parsers) (* Not sure if begin or end matter. *)
-  
+
   let rec deriveF c parser = 
     match parser with 
-      | Empty      -> Empty
-      | Epsilon    -> Empty
+      | Empty        -> Empty
+      | Epsilon      -> Empty
       | Token tok    ->
-         if c = tok then Epsilon
-         else Empty
-      | Alt(l1, l2) ->
-        let l1f, l2f = force parser
-        alt [derive c l1f; derive c l2f]  //MIGHT NEED LAZY DERIVE.
-      | Seq(l1, l2) ->
-        let l1f, l2f = force parser
-        let der = seq [derive c l1f; l2f]
-        if nullable l1f then alt [der; derive c l2f]
+        if c = tok then Epsilon
+        else Empty
+      | Altp(l1, l2) -> 
+        let d1 = derive c l1
+        let d2 = derive c l2
+        alt [derive c l1; derive c l2]
+      | Seqp(l1, l2) ->
+        let der = seq [derive c l1; l2]
+        if nullable l1 then alt [der; derive c l2]
         else der
+      | _ -> parser (* Never should be hit? *)
   
   and derive = 
     memo2d deriveF
+
+  let rec parseDeriveF c parser =
+    match parser with
+      | Empty     -> Empty
+      | Epsilon   -> Epsilon
+      | EpsS _    -> Empty
+      | Token tok ->
+        if c = tok then 
+          let set = HashSet<ParseSet>();
+          set.Add(TokenS(c))
+          EpsS (set)
+        else Empty
+      | Altp(l1, l2) -> alt [parseDerive c l1; parseDerive c l2]
+      | Seqp(l1, l2) ->
+        let der = seq [parseDerive c l1; l2]  (* TODO: Make sure this line is right ifNullable l1 or parser *)
+        if nullable l1 then alt [seq [EpsS (parseNull l1); parseDerive c l2]; der]
+        else der
   
-  let rec size parser = 
-    match parser with 
-      | Empty      -> 1
-      | Epsilon    -> 1
-      | Token c      -> 1
-      | Alt(l1,l2) -> 
-        let l1f, l2f = force parser
-        1 + size l1f + size l2f
-      | Seq(l1,l2) -> 
-        let l1f, l2f = force parser
-        1 + size l1f + size l2f
+  and parseDerive = 
+    memo2d parseDeriveF
   
   let parses parser tokens = 
     let rec partialParse parser tokens = 
@@ -151,47 +271,28 @@ module Parser =
         | []    -> nullable parser
         | c::cs -> partialParse (derive c parser) cs
     partialParse parser tokens   
-  
-  let parseNull p =  (* Still need to finish. *)
-    match p with 
-      | Empty -> Set.empty
-      | _ -> Set.empty
 
   let rec parse p s =
     match s with
       | []    -> parseNull p
-      | c::cs -> parse (derive c p) cs
+      | c::cs -> parse (parseDerive c p) cs   (* Use parse-derive *)
 
   (* DEBUGGING *)
   
+  let rec sizeF parser = 
+    match parser with 
+      | Empty      -> 1
+      | Epsilon    -> 1
+      | Token c      -> 1
+      | Altp(l1,l2) -> 1 + size l1 + size l2
+      | Seqp(l1,l2) -> 1 + size l1 + size l2
+      | _ -> 0
+  and size = Fix.fix sizeF 0
+
   let rec lit charArray =
     match charArray with
       | []    -> []
       | c::cs -> (Token c)::(lit cs)
-  
-  let printParser parser = 
-    let rec printIt parser = 
-      match parser with
-        | Empty     -> printf "Empty"
-        | Epsilon   -> printf "Epsilon"
-        | Token c     -> printf "Token %c" c
-        | Alt(l1,l2) ->
-          let l1f, l2f = force parser
-          printf "Alt("
-          printIt l1f
-          printf ", "
-          printIt l2f
-          printf ")"
-        | Seq(l1,l2) -> 
-          let l1f, l2f = force parser
-          printf "Seq("
-          printIt l1f
-          printf ", "
-          printIt l2f
-          printf ")"
-    printIt parser
-    printf "\n"
-    true
   
   let parses_str parser str = 
     let chars = String.explode str
@@ -235,4 +336,5 @@ module Parser =
     let seq_xy = seq lits
     let alt_xy = alt lits
     seq_xy
-  let language = main "hello World"  
+  let language = main "hi"  
+  (* Parser.parses Parser.mini_java Parser.language *)
