@@ -12,11 +12,12 @@ let rec reduce f l =
 		reduce f (red::xs);;
 
 type parser = 
-  | Empty
-  | Epsilon
-  | Token of char
-  | Seq of parser lazy_t * parser lazy_t
-  | Alt of parser lazy_t * parser lazy_t;;
+	| Empty
+	| Epsilon
+	| Token of char
+	| Seq of parser lazy_t * parser lazy_t
+	| Alt of parser lazy_t * parser lazy_t
+	| Refr of parser ref;;
 
 let memo f =
   let m = ref [] in
@@ -57,15 +58,16 @@ let force l =
 
 let rec nullable (parser : parser) =
 	match parser with
-	| Empty 	-> false
-	| Epsilon 	-> true
-	| Token c 	-> false
-	| Alt(l1, l2)	-> 
+	| Empty 	 -> false
+	| Epsilon 	 -> true
+	| Token c 	 -> false
+	| Alt(l1,l2) -> 
 	  let l1f, l2f = force parser in
 	  nullable l1f || nullable l2f
-	| Seq(l1,l2) 	->
+	| Seq(l1,l2) ->
 	  let l1f, l2f = force parser in
-	  nullable l1f && nullable l2f;;
+	  nullable l1f && nullable l2f
+    | Refr l     -> false;; (* Need to fix first *)
 
 let isEmpty (parser : parser) = 
 	match parser with
@@ -97,6 +99,7 @@ let rec compactF (parser : parser) =
 		else
 			let l1c, l2c = (compact l1f, compact l2f) in
 			Seq(lazy(l1c), lazy(l2c))
+	| Refr l     -> compact !l
 
 and compact parser = compactF parser;; (* Need to memoize *)
 
@@ -123,19 +126,21 @@ let rec deriveF c parser =
 		let der = seq [derive c l1f; l2f] in 
 		if nullable l1f then alt [der; derive c l2f]
 		else der
+	| Refr l     -> derive !l
 and derive c parser = deriveF c parser;; (* Need to Memoize *)
 
 let rec size (parser : parser) =
 	match parser with
-	| Empty 	-> 1
-	| Epsilon 	-> 1
-	| Token c 	-> 1
-	| Alt(l1,l2)	-> 
+	| Empty 	 -> 1
+	| Epsilon 	 -> 1
+	| Token c 	 -> 1
+	| Alt(l1,l2) -> 
 		let l1f, l2f = force parser in
 		1 + size l1f + size l2f
-	| Seq(l1,l2)	->
+	| Seq(l1,l2) ->
 		let l1f, l2f = force parser in
-		1 + size l1f + size l2f;;
+		1 + size l1f + size l2f
+    | Refr l     -> 0;;
 
 let parses parser str = (* Works for strings not tokens. *)
 	let rec partialParse parser chars =
